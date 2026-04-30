@@ -1,4 +1,4 @@
-import { normalizeTaskStatus, slugifyTaskTitle, type TaskItem } from "./task-types.ts";
+import { normalizeTaskOwner, normalizeTaskStatus, slugifyTaskTitle, type TaskItem } from "./task-types.ts";
 
 type TaskInputObject = Record<string, unknown>;
 
@@ -78,6 +78,7 @@ function normalizeTaskLike(
 	const id = firstString(value.id) ?? buildId(title, used);
 	const status = normalizeTaskStatus(value.status ?? value.state ?? value.done ?? value.completed ?? value.checked);
 	const notes = firstString(value.notes, value.note, value.context, value.details);
+	const owner = normalizeTaskOwner(value.owner ?? value.assignee ?? value.assignedTo);
 	const item: TaskItem = {
 		id,
 		title,
@@ -86,7 +87,10 @@ function normalizeTaskLike(
 		source: firstString(value.source) ?? source,
 		sourceRef: firstString(value.sourceRef, value.planId, value.section) ?? sourceRef,
 		parentId: firstString(value.parentId),
+		owner,
 		notes,
+		body: firstString(value.body, value.markdown) ?? notes,
+		createdAt: typeof value.createdAt === "number" && Number.isFinite(value.createdAt) ? value.createdAt : now,
 		updatedAt: typeof value.updatedAt === "number" && Number.isFinite(value.updatedAt) ? value.updatedAt : now,
 	};
 	used.add(item.id);
@@ -101,7 +105,7 @@ function parseChecklistLine(line: string): { title: string; status?: string } | 
 	current = current.replace(/^\d+[.)]\s+/, "");
 	const checked = current.match(/^\[(x|X|✓|✔)\]\s+/);
 	if (checked) {
-		return { title: current.replace(/^\[(x|X|✓|✔)\]\s+/, "").trim(), status: "done" };
+		return { title: current.replace(/^\[(x|X|✓|✔)\]\s+/, "").trim(), status: "complete" };
 	}
 	const unchecked = current.match(/^\[\s\]\s+/);
 	if (unchecked) {
@@ -175,17 +179,17 @@ export function normalizeTaskInput(input: unknown, source: string, options: Norm
 export function summarizeTaskList(tasks: TaskItem[]): string {
 	const counts = {
 		pending: 0,
-		in_progress: 0,
+		progress: 0,
 		blocked: 0,
-		done: 0,
+		complete: 0,
 		cancelled: 0,
 	};
 	for (const task of tasks) {
 		counts[task.status] += 1;
 	}
 	const parts: string[] = [`${tasks.length} task${tasks.length === 1 ? "" : "s"}`];
-	if (counts.in_progress > 0) parts.push(`${counts.in_progress} active`);
+	if (counts.progress > 0) parts.push(`${counts.progress} progress`);
 	if (counts.blocked > 0) parts.push(`${counts.blocked} blocked`);
-	if (counts.done > 0) parts.push(`${counts.done} done`);
+	if (counts.complete > 0) parts.push(`${counts.complete} complete`);
 	return parts.join(" • ");
 }

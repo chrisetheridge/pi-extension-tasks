@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { normalizeTaskInput } from "../src/task-normalize.ts";
 
 describe("task normalization", () => {
-	it("parses markdown checklists and infers done state", () => {
+	it("parses markdown checklists and infers complete state", () => {
 		const tasks = normalizeTaskInput("- [ ] Draft plan\n- [x] Implement panel\n1. Verify output\n", "planner", {
 			now: 10,
 		});
@@ -20,7 +20,7 @@ describe("task normalization", () => {
 			expect.objectContaining({
 				id: "task-implement-panel",
 				title: "Implement panel",
-				status: "done",
+				status: "complete",
 				source: "planner",
 				order: 1,
 				updatedAt: 10,
@@ -52,7 +52,7 @@ describe("task normalization", () => {
 			expect.objectContaining({
 				id: "task-sync-tasks",
 				title: "Sync tasks",
-				status: "done",
+				status: "complete",
 				source: "upstream",
 				sourceRef: "upstream-plan",
 				order: 0,

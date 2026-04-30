@@ -1,4 +1,5 @@
-export type TaskStatus = "pending" | "in_progress" | "blocked" | "done" | "cancelled";
+export type TaskStatus = "pending" | "progress" | "blocked" | "complete" | "cancelled";
+export type TaskOwner = "user" | "agent";
 
 export interface TaskItem {
 	id: string;
@@ -8,7 +9,10 @@ export interface TaskItem {
 	source: string;
 	sourceRef?: string;
 	parentId?: string;
+	owner?: TaskOwner;
 	notes?: string;
+	body?: string;
+	createdAt?: number;
 	updatedAt: number;
 }
 
@@ -18,8 +22,11 @@ export interface TaskPatch {
 	source?: string;
 	sourceRef?: string;
 	parentId?: string;
+	owner?: TaskOwner;
 	notes?: string;
+	body?: string;
 	order?: number;
+	createdAt?: number;
 	updatedAt?: number;
 }
 
@@ -30,39 +37,56 @@ export type TaskEvent =
 	| { kind: "remove"; id: string }
 	| { kind: "activate"; id: string; note?: string };
 
-export const TASK_OVERLAY_CUSTOM_TYPE = "task-overlay";
-
 export function isTaskStatus(value: unknown): value is TaskStatus {
 	return (
-		value === "pending" || value === "in_progress" || value === "blocked" || value === "done" || value === "cancelled"
+		value === "pending" || value === "progress" || value === "blocked" || value === "complete" || value === "cancelled"
 	);
+}
+
+export function isTaskOwner(value: unknown): value is TaskOwner {
+	return value === "user" || value === "agent";
 }
 
 export function normalizeTaskStatus(value: unknown): TaskStatus {
 	if (isTaskStatus(value)) return value;
-	if (typeof value === "boolean") return value ? "done" : "pending";
-	if (typeof value === "number") return value > 0 ? "done" : "pending";
+	if (typeof value === "boolean") return value ? "complete" : "pending";
+	if (typeof value === "number") return value > 0 ? "complete" : "pending";
 	if (typeof value === "string") {
 		const normalized = value
 			.trim()
 			.toLowerCase()
 			.replace(/[\s_-]+/g, "_");
-		if (normalized === "todo" || normalized === "open" || normalized === "pending") return "pending";
-		if (normalized === "doing" || normalized === "doing_now" || normalized === "active" || normalized === "in_progress")
-			return "in_progress";
+		if (normalized === "open" || normalized === "pending") return "pending";
+		if (
+			normalized === "doing" ||
+			normalized === "doing_now" ||
+			normalized === "active" ||
+			normalized === "in_progress" ||
+			normalized === "progress"
+		)
+			return "progress";
 		if (normalized === "blocked" || normalized === "waiting") return "blocked";
 		if (normalized === "done" || normalized === "complete" || normalized === "completed" || normalized === "shipped")
-			return "done";
+			return "complete";
 		if (normalized === "cancelled" || normalized === "canceled") return "cancelled";
 	}
 	return "pending";
 }
 
+export function normalizeTaskOwner(value: unknown): TaskOwner | undefined {
+	if (isTaskOwner(value)) return value;
+	if (typeof value !== "string") return undefined;
+	const normalized = value.trim().toLowerCase();
+	if (normalized === "user" || normalized === "human" || normalized === "me") return "user";
+	if (normalized === "agent" || normalized === "assistant" || normalized === "ai") return "agent";
+	return undefined;
+}
+
 export function statusSymbol(status: TaskStatus): string {
 	switch (status) {
-		case "done":
+		case "complete":
 			return "✓";
-		case "in_progress":
+		case "progress":
 			return "~";
 		case "blocked":
 			return "!";
@@ -75,10 +99,10 @@ export function statusSymbol(status: TaskStatus): string {
 
 export function statusLabel(status: TaskStatus): string {
 	switch (status) {
-		case "done":
-			return "done";
-		case "in_progress":
-			return "active";
+		case "complete":
+			return "complete";
+		case "progress":
+			return "progress";
 		case "blocked":
 			return "blocked";
 		case "cancelled":

@@ -14,9 +14,10 @@ const baseTasks = [
 	{
 		id: "task-2",
 		title: "Implement feature",
-		status: "in_progress" as const,
+		status: "progress" as const,
 		order: 1,
 		source: "agent",
+		owner: "agent" as const,
 		updatedAt: 2,
 	},
 ];
@@ -32,7 +33,7 @@ describe("task store", () => {
 			{
 				id: "task-3",
 				title: "Ship it",
-				status: "done",
+				status: "complete",
 				order: 2,
 				source: "agent",
 				updatedAt: 3,
@@ -40,22 +41,22 @@ describe("task store", () => {
 		]);
 
 		expect(changed).toHaveBeenCalled();
-		expect(store.snapshot().map((task) => task.id)).toEqual(["task-1", "task-2", "task-3"]);
+		expect(store.snapshot().map((task) => task.id)).toEqual(["task-2", "task-1", "task-3"]);
 	});
 
 	it("patches and completes tasks", () => {
 		const store = createTaskStore(baseTasks);
 
-		store.patch("task-1", { status: "in_progress", notes: "working now" });
+		store.patch("task-1", { status: "progress", owner: "user", notes: "working now" });
 		store.complete("task-1", "done now");
 
 		expect(store.snapshot()).toEqual([
-			expect.objectContaining({ id: "task-1", status: "done", notes: "done now" }),
-			expect.objectContaining({ id: "task-2", status: "in_progress" }),
+			expect.objectContaining({ id: "task-2", status: "progress", owner: "agent" }),
+			expect.objectContaining({ id: "task-1", status: "complete", notes: "done now", owner: undefined }),
 		]);
 	});
 
-	it("replays persisted events into the same state", () => {
+	it("applies in-memory events into the same state", () => {
 		const store = createTaskStore();
 		store.applyEvent({ kind: "replace", tasks: baseTasks });
 		store.applyEvent({ kind: "patch", id: "task-2", patch: { status: "blocked", notes: "waiting" } });

@@ -31,12 +31,21 @@ function cloneAndPrepareTask(task: TaskItem, fallbackOrder: number, updatedAt = 
 		source: task.source?.trim() || "planner",
 		sourceRef: task.sourceRef?.trim() || undefined,
 		parentId: task.parentId?.trim() || undefined,
+		owner: task.owner,
 		notes: task.notes?.trim() || undefined,
+		body: task.body?.trim() || task.notes?.trim() || undefined,
+		createdAt: Number.isFinite(task.createdAt) ? task.createdAt : updatedAt,
 		updatedAt: Number.isFinite(task.updatedAt) ? task.updatedAt : updatedAt,
 	};
 }
 
 function compareTasks(a: TaskItem, b: TaskItem): number {
+	const aComplete = a.status === "complete" || a.status === "cancelled";
+	const bComplete = b.status === "complete" || b.status === "cancelled";
+	if (aComplete !== bComplete) return aComplete ? 1 : -1;
+	const aProgress = a.status === "progress";
+	const bProgress = b.status === "progress";
+	if (aProgress !== bProgress) return aProgress ? -1 : 1;
 	if (a.order !== b.order) return a.order - b.order;
 	if (a.updatedAt !== b.updatedAt) return a.updatedAt - b.updatedAt;
 	return a.id.localeCompare(b.id);
@@ -128,6 +137,7 @@ export class TaskStore {
 					id,
 					title: title || existing?.title || "Untitled task",
 					order,
+					createdAt: Number.isFinite(task.createdAt) ? task.createdAt : (existing?.createdAt ?? now()),
 					updatedAt: Number.isFinite(task.updatedAt) ? task.updatedAt : now(),
 					source: task.source || existing?.source || "planner",
 				},
@@ -159,10 +169,16 @@ export class TaskStore {
 			source: patch.source?.trim() || existing.source,
 			sourceRef: patch.sourceRef !== undefined ? patch.sourceRef.trim() || undefined : existing.sourceRef,
 			parentId: patch.parentId !== undefined ? patch.parentId.trim() || undefined : existing.parentId,
+			owner: "owner" in patch ? patch.owner : existing.owner,
 			notes: patch.notes !== undefined ? patch.notes.trim() || undefined : existing.notes,
+			body: patch.body !== undefined ? patch.body.trim() || undefined : existing.body,
 			order: patch.order !== undefined && Number.isFinite(patch.order) ? patch.order : existing.order,
+			createdAt: patch.createdAt !== undefined && Number.isFinite(patch.createdAt) ? patch.createdAt : existing.createdAt,
 			updatedAt: patch.updatedAt ?? now(),
 		};
+		if (updated.status === "complete" || updated.status === "cancelled") {
+			updated.owner = undefined;
+		}
 		this.tasks.set(id, updated);
 		this.revision += 1;
 		this.reconcileCurrentTask();
@@ -171,7 +187,7 @@ export class TaskStore {
 	}
 
 	complete(id: string, note?: string): void {
-		this.patch(id, { status: "done", notes: note });
+		this.patch(id, { status: "complete", notes: note });
 	}
 
 	block(id: string, note?: string): void {
@@ -180,7 +196,12 @@ export class TaskStore {
 
 	activate(id: string, note?: string): void {
 		this.currentTaskId = id;
-		this.patch(id, { status: "in_progress", notes: note });
+		this.patch(id, { status: "progress", owner: "agent", notes: note });
+	}
+
+	claim(id: string): void {
+		this.currentTaskId = id;
+		this.patch(id, { status: "progress", owner: "user" });
 	}
 
 	remove(id: string): void {
@@ -227,7 +248,7 @@ export class TaskStore {
 		if (this.currentTaskId && this.tasks.has(this.currentTaskId)) {
 			return;
 		}
-		const active = this.snapshot().find((task) => task.status === "in_progress");
+		const active = this.snapshot().find((task) => task.status === "progress");
 		this.currentTaskId = active?.id ?? null;
 	}
 

@@ -1,6 +1,6 @@
 # pi-extension-tasks
 
-Standalone Pi package for the task overlay extension and generic task tool.
+Standalone Pi package for the markdown-backed task overlay extension and generic task tool.
 
 ## Layout
 
@@ -15,6 +15,30 @@ From this local checkout:
 ```bash
 pi install ../pi-extension-tasks -l
 ```
+
+## Configuration
+
+Tasks are stored as one markdown file per task. Configure the task directory with:
+
+- Project: `.pi/extensions/tasks/config.json`
+- User: `~/.pi/agent/extensions/tasks/config.json`
+
+```json
+{
+	"path": ".pi/tasks"
+}
+```
+
+Relative paths resolve against the current project directory. If no config exists, tasks are stored in `.pi/tasks`.
+
+## Usage
+
+- `/tasks` opens the centered searchable task overlay.
+- `Ctrl+Shift+T` toggles the overlay.
+- The `tasks` tool can sync, upsert, update, activate, complete, remove, snapshot, show, and hide tasks.
+- Overlay actions are `view`, `claim`, `refine`, `complete`, and `delete`.
+
+Task files use YAML frontmatter for `id`, `title`, `status`, `owner`, `created_at`, and `updated_at`; the markdown body stores the task text.
 
 ## Package
 

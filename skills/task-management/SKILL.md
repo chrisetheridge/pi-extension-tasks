@@ -1,76 +1,139 @@
 ---
-name: task-overlay-usage
-description: Use when working with Pi's task overlay extension or when the agent needs a reminder for how to create, sync, update, and persist tasks in the generic task system.
-version: 1.0.0
-author: Hermes Agent
-license: MIT
-metadata:
-  hermes:
-    tags: [software-development, pi, tasks, overlay, planning]
-    related_skills: [hermes-agent-skill-authoring, writing-plans]
+name: task-management
+description: Use when working with Pi's markdown-backed tasks extension, including syncing tasks, updating task state, using the task overlay, configuring task storage, or explaining how agents should keep task files current.
 ---
 
-# Task Overlay Usage
+# Task Management
 
-## Overview
+## What This Extension Does
 
-This skill is the agent-facing reference for Pi's task overlay feature. It explains how to feed generic task input into the system, how to keep the overlay synchronized with ongoing work, and how to avoid assuming a specialized plan format.
+Pi has a `tasks` extension that keeps project work items in markdown files and exposes them through:
 
-Use this skill whenever the conversation is about task tracking, planning, progress sync, task-panel rendering, or integrating upstream planning tools into Pi.
+- the `tasks` tool for agents
+- the `/tasks` command for users
+- the `Ctrl+Shift+T` task overlay shortcut
+- a centered searchable overlay with task actions
 
-## When to Use
+Use this skill whenever you need to create, sync, update, inspect, explain, or debug tasks in this extension.
 
-- The user asks to add, update, complete, block, remove, show, or hide tasks in Pi
-- The user wants the floating task overlay to stay in sync with agent work
-- The user wants upstream planners to send tasks without a custom plan schema
-- The user asks how to invoke or use the task-overlay feature correctly
-- You need a quick reminder of the extension's task store, normalization, or panel behavior
+## Source of Truth
 
-Do not use this skill for unrelated codebase work.
+Markdown task files are canonical. Do not treat session entries, chat history, or an in-memory store as durable state.
 
-## Quick Start
+Task directory config is read in this order:
 
-1. Load this skill before answering task-overlay questions.
-2. Treat the task store as the source of truth.
-3. Accept generic task input first; normalize it into canonical tasks.
-4. Keep the overlay updated as tasks change.
-5. Persist task events through the session-backed task store so the UI can recover after refresh/restart.
-6. If you encounter more work, update the task list first.
+1. Project config: `.pi/extensions/tasks/config.json`
+2. User config: `~/.pi/agent/extensions/tasks/config.json`
+3. Default path: `.pi/tasks`
 
-## Supported Task Input
+Config shape:
 
-The task system is intentionally generic. Upstream tools may provide any of these forms:
+```json
+{
+  "path": ".pi/tasks"
+}
+```
 
-- Raw text
-- Markdown checklists
-- Numbered lists
-- JSON objects
-- Arrays of task objects
-- Mixed planning notes that can be normalized into tasks
+Relative paths resolve against the current project directory. Do not use `PI_TODO_PATH` or other environment variables for task storage.
 
-Normalization should extract stable task identities where possible, but it should not require a special "plan" format.
+## Task File Format
 
-## Core Actions
+Each task is one `.md` file. The file name should normally match the task id, for example `task-write-tests.md`.
 
-The task overlay should support these operations conceptually:
+```markdown
+---
+id: "task-write-tests"
+title: "Write tests"
+status: progress
+owner: agent
+created_at: "2026-04-30T10:00:00.000Z"
+updated_at: "2026-04-30T10:15:00.000Z"
+---
 
-- sync: replace or merge a task set from upstream input
-- upsert: create or update a task
-- update: change title, notes, status, priority, or metadata
-- complete: mark a task done
-- block / unblock: toggle blocked state
-- remove: delete a task
-- clear: delete all tasks
-- activate: focus the task in the overlay
-- show / hide: control panel visibility
-- snapshot: inspect the current canonical state
+Add coverage for markdown task parsing and overlay actions.
+```
 
-When explaining behavior to the user, prefer these generic verbs rather than plan-specific wording.
+Allowed statuses:
 
-## How the Agent Should Behave
+- `pending`
+- `progress`
+- `blocked`
+- `complete`
+- `cancelled`
 
-- Keep the canonical task list synchronized with actual work
-- If a task changes, update the overlay immediately rather than waiting until the end
-- Prefer concise task names and stable IDs
-- Preserve user-supplied structure when it is useful, but normalize it into the task store
-- Do not require the user to rewrite their tasks into a custom format
+Allowed owners:
+
+- `agent`
+- `user`
+- omitted when nobody owns it, or when the task is `complete`/`cancelled`
+
+The markdown body is the task text/details. Keep it useful but concise.
+
+## Agent Tool Usage
+
+Use the `tasks` tool, not shell edits, when the extension is available. Tool operations are:
+
+- `sync`: replace the canonical task set by default; use `replace: false` to merge
+- `upsert`: create or update task files without deleting unrelated tasks
+- `update`: change title/body/status/owner metadata
+- `activate`: mark a task as `progress` and `owner: agent`
+- `complete`: mark a task as `complete` and clear owner
+- `block`: mark a task as `blocked`
+- `remove`: delete a task file
+- `snapshot`: inspect current task state
+- `show`: open the overlay
+- `hide`: hide the overlay
+
+Typical calls:
+
+```json
+{ "operation": "sync", "input": "- [ ] Draft plan\n- [ ] Implement\n- [ ] Verify" }
+```
+
+```json
+{ "operation": "activate", "taskId": "task-implement" }
+```
+
+```json
+{ "operation": "complete", "taskId": "task-implement" }
+```
+
+```json
+{ "operation": "upsert", "task": { "title": "Add regression test", "body": "Cover the markdown file path resolver." } }
+```
+
+## User Overlay Behavior
+
+The `/tasks` command opens the centered task overlay. Typing text after `/tasks` syncs that text as tasks.
+
+Overlay behavior:
+
+- Type to fuzzy-search by id, title, status, owner, and body text.
+- Use arrow keys to navigate.
+- Press Enter on a task to open actions.
+- Press Esc to go back or close.
+
+Action menu:
+
+- `view`: show task text in the centered overlay
+- `claim`: set `status: progress`, `owner: user`
+- `refine`: prefill the chat editor with a refinement prompt; do not edit the file yet
+- `complete`: set `status: complete` and clear owner
+- `delete`: confirm, then delete the markdown file
+
+## Agent Behavior Rules
+
+- Keep tasks aligned with actual work, not aspirational plans.
+- Call `activate` when starting a task as the agent.
+- Call `complete` as soon as a task is finished.
+- Use `block` when progress is waiting on a real dependency.
+- Use `upsert` when discovering a new task during work.
+- Use `snapshot` before making uncertain updates.
+- Prefer concise titles and stable ids.
+- Preserve useful user-supplied task body text.
+- Do not create `/todos`, `todos`, `clear-tasks`, GC, lock files, session persistence, or environment-variable storage behavior.
+- Do not manually edit task files unless the `tasks` tool is unavailable or the user explicitly asks for direct file edits.
+
+## Empty and Error States
+
+If no task files exist, the overlay should show an empty state. If config or task files are unreadable, surface that as an error state instead of silently ignoring it. Missing config is not an error; it means use `.pi/tasks`.

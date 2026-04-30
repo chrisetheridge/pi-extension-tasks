@@ -3,22 +3,21 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { OverlayOptions } from "@mariozechner/pi-tui";
 import {
-	TASK_OVERLAY_CUSTOM_TYPE,
-	type TaskEvent,
-	type TaskItem,
-	type TaskPatch,
-	type TaskStatus,
-} from "./task-types.ts";
+	clearTasks,
+	deleteTask,
+	deriveTaskId,
+	loadTasks,
+	mergeTaskPatch,
+	writeTask,
+	type TaskConfig,
+} from "./task-files.ts";
 import { normalizeTaskInput, summarizeTaskList } from "./task-normalize.ts";
-import { TaskPanel, type ThemeLike as PanelThemeLike } from "./task-panel.ts";
+import { TaskPanel, type TaskPanelActions, type ThemeLike as PanelThemeLike } from "./task-panel.ts";
 import { TaskStore, createTaskStore } from "./task-store.ts";
+import { normalizeTaskStatus, type TaskItem, type TaskOwner, type TaskPatch, type TaskStatus } from "./task-types.ts";
 
 const TASK_PANEL_KEY = "tasks";
 const TASK_PANEL_SHORTCUT = "ctrl+shift+t";
-const TASK_COMMAND_COMPLETIONS = [
-	{ value: "clear", label: "clear", description: "Clear all tasks" },
-	{ value: "clear-all", label: "clear-all", description: "Clear all tasks" },
-];
 
 const TASK_TOOL_PARAMS = Type.Object({
 	operation: Type.Union([
@@ -29,7 +28,6 @@ const TASK_TOOL_PARAMS = Type.Object({
 		Type.Literal("block"),
 		Type.Literal("remove"),
 		Type.Literal("activate"),
-		Type.Literal("clear"),
 		Type.Literal("snapshot"),
 		Type.Literal("show"),
 		Type.Literal("hide"),
@@ -60,6 +58,8 @@ type TaskToolParams = {
 
 interface RuntimeState {
 	store: TaskStore;
+	config?: TaskConfig;
+	loadErrors: string[];
 	panelHandle?: {
 		setHidden?(hidden: boolean): void;
 		hide?(): void;
@@ -67,18 +67,6 @@ interface RuntimeState {
 		isHidden?(): boolean;
 	};
 	panelPromise?: Promise<unknown>;
-}
-
-interface CustomEntryLike {
-	type?: string;
-	customType?: string;
-	data?: unknown;
-	details?: unknown;
-}
-
-interface SessionManagerLike {
-	appendCustomEntry?(customType: string, event: TaskEvent): void;
-	getEntries(): Array<CustomEntryLike>;
 }
 
 interface ToolExecutionResult {
@@ -92,42 +80,22 @@ function getRuntime(ctx: ExtensionContext): RuntimeState {
 	const key = ctx.sessionManager as unknown as object;
 	let runtime = runtimeBySessionManager.get(key);
 	if (!runtime) {
-		runtime = { store: createTaskStore() };
+		runtime = { store: createTaskStore(), loadErrors: [] };
 		runtimeBySessionManager.set(key, runtime);
 	}
 	return runtime;
 }
 
-function getOverlayOptions(widthHint = 32): { overlay: true; overlayOptions: OverlayOptions } {
+function getOverlayOptions(): { overlay: true; overlayOptions: OverlayOptions } {
 	return {
 		overlay: true,
 		overlayOptions: {
-			anchor: "bottom-right",
-			margin: { left: 0, bottom: 0 },
-			width: `${widthHint}%`,
-			maxHeight: "90%",
-			visible: (termWidth: number) => termWidth >= 90,
+			anchor: "center",
+			width: "72%",
+			maxHeight: "85%",
+			visible: (termWidth: number) => termWidth >= 70,
 		},
 	};
-}
-
-function persistEvent(ctx: ExtensionContext, event: TaskEvent): void {
-	const sessionManager = ctx.sessionManager as SessionManagerLike;
-	if (typeof sessionManager.appendCustomEntry === "function") {
-		sessionManager.appendCustomEntry(TASK_OVERLAY_CUSTOM_TYPE, event);
-	}
-}
-
-function hydrateStoreFromSessionEntries(runtime: RuntimeState, entries: Array<CustomEntryLike>): void {
-	const store = createTaskStore();
-	for (const entry of entries) {
-		if (!entry || (entry.type !== "custom" && entry.type !== "custom_message")) continue;
-		if (entry.customType !== TASK_OVERLAY_CUSTOM_TYPE) continue;
-		const data = entry.data ?? entry.details;
-		if (!data || typeof data !== "object") continue;
-		store.applyEvent(data as TaskEvent);
-	}
-	runtime.store = store;
 }
 
 function updateFooterStatus(ctx: ExtensionContext, store: TaskStore): void {
@@ -136,8 +104,206 @@ function updateFooterStatus(ctx: ExtensionContext, store: TaskStore): void {
 	ctx.ui.setStatus(TASK_PANEL_KEY, summary);
 }
 
+async function refreshRuntime(ctx: ExtensionContext, runtime: RuntimeState): Promise<void> {
+	const result = await loadTasks(ctx.cwd);
+	runtime.config = result.config;
+	runtime.loadErrors = result.errors;
+	runtime.store.replace(result.tasks);
+	updateFooterStatus(ctx, runtime.store);
+}
+
+function hidePanel(runtime: RuntimeState): void {
+	runtime.panelHandle?.setHidden?.(true);
+	if (!runtime.panelHandle?.setHidden) {
+		runtime.panelHandle?.hide?.();
+	}
+}
+
+async function ensureRuntimeLoaded(ctx: ExtensionContext, runtime: RuntimeState): Promise<TaskConfig> {
+	if (!runtime.config) {
+		await refreshRuntime(ctx, runtime);
+	}
+	return runtime.config!;
+}
+
+function taskById(store: TaskStore, taskId?: string): TaskItem | undefined {
+	if (!taskId) return undefined;
+	return store.snapshot().find((task) => task.id === taskId);
+}
+
+function taskByInput(store: TaskStore, input: unknown, source: string, sourceRef?: string): TaskItem | undefined {
+	const candidate = normalizeTaskInput(input, source, { sourceRef })[0];
+	if (!candidate) return undefined;
+	return store.snapshot().find((task) => task.id === candidate.id || task.title.toLowerCase() === candidate.title.toLowerCase());
+}
+
+function normalizeForWrite(task: TaskItem, order: number, existingIds: Set<string>): TaskItem {
+	const id = task.id?.trim() || deriveTaskId(task.title, existingIds);
+	existingIds.add(id);
+	const now = Date.now();
+	return {
+		...task,
+		id,
+		order,
+		status: normalizeTaskStatus(task.status),
+		body: task.body ?? task.notes,
+		notes: task.notes ?? task.body,
+		createdAt: task.createdAt ?? now,
+		updatedAt: task.updatedAt ?? now,
+	};
+}
+
+async function writeTaskSet(ctx: ExtensionContext, runtime: RuntimeState, tasks: TaskItem[], replace: boolean): Promise<void> {
+	const config = await ensureRuntimeLoaded(ctx, runtime);
+	const existing = replace ? [] : runtime.store.snapshot();
+	if (replace) {
+		await clearTasks(config.tasksDir);
+	}
+	const existingById = new Map(existing.map((task) => [task.id, task]));
+	const existingIds = new Set(existing.map((task) => task.id));
+	for (const [index, task] of tasks.entries()) {
+		const current = existingById.get(task.id);
+		const prepared = normalizeForWrite(
+			current
+				? {
+						...current,
+						...task,
+						body: task.body ?? task.notes ?? current.body,
+						notes: task.notes ?? task.body ?? current.notes,
+					}
+				: task,
+			index,
+			existingIds,
+		);
+		await writeTask(config.tasksDir, prepared);
+	}
+	await refreshRuntime(ctx, runtime);
+}
+
+async function applySync(runtime: RuntimeState, ctx: ExtensionContext, params: TaskToolParams): Promise<string> {
+	await refreshRuntime(ctx, runtime);
+	const source = params.source?.trim() || "planner";
+	const tasks = normalizeTaskInput(params.input ?? params.tasks ?? params.task ?? [], source, {
+		sourceRef: params.sourceRef,
+	});
+	await writeTaskSet(ctx, runtime, tasks, params.replace !== false);
+	if (params.open) openPanel(ctx, runtime);
+	return `synced ${tasks.length} task${tasks.length === 1 ? "" : "s"}`;
+}
+
+async function applyUpsert(runtime: RuntimeState, ctx: ExtensionContext, params: TaskToolParams): Promise<string> {
+	await refreshRuntime(ctx, runtime);
+	const source = params.source?.trim() || "agent";
+	const tasks = normalizeTaskInput(params.input ?? params.tasks ?? params.task ?? [], source, {
+		sourceRef: params.sourceRef,
+	});
+	await writeTaskSet(ctx, runtime, tasks, false);
+	if (params.open) openPanel(ctx, runtime);
+	return `upserted ${tasks.length} task${tasks.length === 1 ? "" : "s"}`;
+}
+
+async function applyPatch(runtime: RuntimeState, ctx: ExtensionContext, params: TaskToolParams): Promise<string> {
+	await refreshRuntime(ctx, runtime);
+	const task =
+		taskById(runtime.store, params.taskId) ??
+		taskByInput(runtime.store, params.task, params.source?.trim() || "agent", params.sourceRef);
+	if (!task) return "no matching task";
+	const rawTask = params.task && typeof params.task === "object" ? (params.task as Record<string, unknown>) : undefined;
+	const patch: TaskPatch = {
+		title: typeof rawTask?.title === "string" ? rawTask.title : undefined,
+		notes: params.note,
+		body: params.note,
+	};
+	if (params.operation === "complete") patch.status = "complete";
+	if (params.operation === "block") patch.status = "blocked";
+	if (params.operation === "activate") {
+		patch.status = "progress";
+		patch.owner = "agent";
+	}
+	if (rawTask) {
+		patch.title = typeof rawTask.title === "string" ? rawTask.title : patch.title;
+		patch.status = rawTask.status ? (rawTask.status as TaskStatus) : patch.status;
+		patch.owner = rawTask.owner ? (rawTask.owner as TaskOwner) : patch.owner;
+		patch.body = typeof rawTask.body === "string" ? rawTask.body : patch.body;
+		patch.notes = typeof rawTask.notes === "string" ? rawTask.notes : patch.notes;
+	}
+	const config = await ensureRuntimeLoaded(ctx, runtime);
+	const updated = mergeTaskPatch(task, patch);
+	await writeTask(config.tasksDir, updated);
+	await refreshRuntime(ctx, runtime);
+	if (params.open) openPanel(ctx, runtime);
+	const verb =
+		params.operation === "block"
+			? "blocked"
+			: params.operation === "activate"
+				? "activated"
+				: params.operation === "complete"
+					? "completed"
+					: "updated";
+	return `${verb} ${task.title}`;
+}
+
+async function applyRemove(runtime: RuntimeState, ctx: ExtensionContext, params: TaskToolParams): Promise<string> {
+	await refreshRuntime(ctx, runtime);
+	const task =
+		taskById(runtime.store, params.taskId) ??
+		taskByInput(runtime.store, params.task, params.source?.trim() || "agent", params.sourceRef);
+	if (!task) return "no matching task";
+	const config = await ensureRuntimeLoaded(ctx, runtime);
+	await deleteTask(config.tasksDir, task.id);
+	await refreshRuntime(ctx, runtime);
+	return `removed ${task.title}`;
+}
+
+function applySnapshot(runtime: RuntimeState): string {
+	const tasks = runtime.store.snapshot();
+	if (tasks.length === 0) return "no tasks";
+	return tasks
+		.map((task) => `${task.id}: ${task.title} [${task.status}${task.owner ? ` @${task.owner}` : ""}]`)
+		.join("\n");
+}
+
+function buildRefinePrompt(task: TaskItem): string {
+	const body = task.body || task.notes || "";
+	return [
+		`Let's refine task ${task.id} "${task.title}".`,
+		"Ask me for the missing details needed to refine the task together.",
+		"Do not rewrite the task file yet and do not make assumptions.",
+		body ? `\nCurrent task text:\n${body}` : "",
+	]
+		.filter(Boolean)
+		.join("\n");
+}
+
+function getPanelActions(ctx: ExtensionContext, runtime: RuntimeState): TaskPanelActions {
+	return {
+		claim: async (task) => {
+			const config = await ensureRuntimeLoaded(ctx, runtime);
+			await writeTask(config.tasksDir, mergeTaskPatch(task, { status: "progress", owner: "user" }));
+			await refreshRuntime(ctx, runtime);
+		},
+		refine: (task) => {
+			ctx.ui.setEditorText(buildRefinePrompt(task));
+			hidePanel(runtime);
+		},
+		complete: async (task) => {
+			const config = await ensureRuntimeLoaded(ctx, runtime);
+			await writeTask(config.tasksDir, mergeTaskPatch(task, { status: "complete", owner: undefined }));
+			await refreshRuntime(ctx, runtime);
+		},
+		delete: async (task) => {
+			const confirmed = await ctx.ui.confirm("Delete task?", `Delete "${task.title}" from disk?`);
+			if (!confirmed) return;
+			const config = await ensureRuntimeLoaded(ctx, runtime);
+			await deleteTask(config.tasksDir, task.id);
+			await refreshRuntime(ctx, runtime);
+		},
+	};
+}
+
 function openPanel(ctx: ExtensionContext, runtime: RuntimeState): void {
 	if (!ctx.hasUI) return;
+	void refreshRuntime(ctx, runtime);
 	if (runtime.panelHandle?.isHidden?.() === false) {
 		runtime.panelHandle.focus?.();
 		return;
@@ -155,6 +321,8 @@ function openPanel(ctx: ExtensionContext, runtime: RuntimeState): void {
 				theme as PanelThemeLike,
 				() => tui.requestRender(),
 				() => hidePanel(runtime),
+				getPanelActions(ctx, runtime),
+				() => runtime.loadErrors,
 			),
 		{
 			...getOverlayOptions(),
@@ -165,112 +333,6 @@ function openPanel(ctx: ExtensionContext, runtime: RuntimeState): void {
 	);
 
 	runtime.panelPromise = Promise.resolve(promise).catch(() => undefined);
-}
-
-function hidePanel(runtime: RuntimeState): void {
-	runtime.panelHandle?.setHidden?.(true);
-	if (!runtime.panelHandle?.setHidden) {
-		runtime.panelHandle?.hide?.();
-	}
-}
-
-function taskById(store: TaskStore, taskId?: string): TaskItem | undefined {
-	if (!taskId) return undefined;
-	return store.snapshot().find((task) => task.id === taskId);
-}
-
-function applySync(runtime: RuntimeState, ctx: ExtensionContext, params: TaskToolParams): string {
-	const source = params.source?.trim() || "planner";
-	const tasks = normalizeTaskInput(params.input ?? params.tasks ?? params.task ?? [], source, {
-		sourceRef: params.sourceRef,
-	});
-	const event: TaskEvent = {
-		kind: params.replace === false ? "merge" : "replace",
-		tasks,
-	};
-	runtime.store.applyEvent(event);
-	persistEvent(ctx, event);
-	updateFooterStatus(ctx, runtime.store);
-	if (params.open) openPanel(ctx, runtime);
-	return `synced ${tasks.length} task${tasks.length === 1 ? "" : "s"}`;
-}
-
-function applyUpsert(runtime: RuntimeState, ctx: ExtensionContext, params: TaskToolParams): string {
-	const source = params.source?.trim() || "agent";
-	const tasks = normalizeTaskInput(params.input ?? params.tasks ?? params.task ?? [], source, {
-		sourceRef: params.sourceRef,
-	});
-	const event: TaskEvent = { kind: "merge", tasks };
-	runtime.store.applyEvent(event);
-	persistEvent(ctx, event);
-	updateFooterStatus(ctx, runtime.store);
-	if (params.open) openPanel(ctx, runtime);
-	return `upserted ${tasks.length} task${tasks.length === 1 ? "" : "s"}`;
-}
-
-function applyPatch(runtime: RuntimeState, ctx: ExtensionContext, params: TaskToolParams): string {
-	const task =
-		taskById(runtime.store, params.taskId) ??
-		normalizeTaskInput(params.task, params.source?.trim() || "agent", { sourceRef: params.sourceRef })[0];
-	if (!task) return "no matching task";
-	const rawTask = params.task && typeof params.task === "object" ? (params.task as Record<string, unknown>) : undefined;
-	const patch: TaskPatch = {
-		title: typeof rawTask?.title === "string" ? rawTask.title : undefined,
-		notes: params.note,
-	};
-	if (params.operation === "complete") patch.status = "done";
-	if (params.operation === "block") patch.status = "blocked";
-	if (params.operation === "activate") patch.status = "in_progress";
-	if (rawTask) {
-		patch.title = typeof rawTask.title === "string" ? rawTask.title : patch.title;
-		patch.status = rawTask.status ? (rawTask.status as TaskStatus) : patch.status;
-		patch.source = typeof rawTask.source === "string" ? rawTask.source : undefined;
-		patch.sourceRef = typeof rawTask.sourceRef === "string" ? rawTask.sourceRef : undefined;
-		patch.parentId = typeof rawTask.parentId === "string" ? rawTask.parentId : undefined;
-		patch.order = typeof rawTask.order === "number" ? rawTask.order : undefined;
-		patch.notes = typeof rawTask.notes === "string" ? rawTask.notes : patch.notes;
-	}
-	const event: TaskEvent = { kind: "patch", id: task.id, patch };
-	runtime.store.applyEvent(event);
-	persistEvent(ctx, event);
-	updateFooterStatus(ctx, runtime.store);
-	if (params.open) openPanel(ctx, runtime);
-	const verb =
-		params.operation === "block"
-			? "blocked"
-			: params.operation === "activate"
-				? "activated"
-				: params.operation === "complete"
-					? "completed"
-					: "updated";
-	return `${verb} ${task.title}`;
-}
-
-function applyRemove(runtime: RuntimeState, ctx: ExtensionContext, params: TaskToolParams): string {
-	const task =
-		taskById(runtime.store, params.taskId) ??
-		normalizeTaskInput(params.task, params.source?.trim() || "agent", { sourceRef: params.sourceRef })[0];
-	if (!task) return "no matching task";
-	const event: TaskEvent = { kind: "remove", id: task.id };
-	runtime.store.applyEvent(event);
-	persistEvent(ctx, event);
-	updateFooterStatus(ctx, runtime.store);
-	return `removed ${task.title}`;
-}
-
-function applyClear(runtime: RuntimeState, ctx: ExtensionContext): string {
-	const count = runtime.store.snapshot().length;
-	const event: TaskEvent = { kind: "replace", tasks: [] };
-	runtime.store.applyEvent(event);
-	persistEvent(ctx, event);
-	updateFooterStatus(ctx, runtime.store);
-	return `cleared ${count} task${count === 1 ? "" : "s"}`;
-}
-
-function applySnapshot(runtime: RuntimeState): string {
-	const tasks = runtime.store.snapshot();
-	if (tasks.length === 0) return "no tasks";
-	return tasks.map((task) => `${task.id}: ${task.title} [${task.status}]`).join("\n");
 }
 
 async function runTaskCommand(ctx: ExtensionContext, args: string): Promise<void> {
@@ -284,28 +346,10 @@ async function runTaskCommand(ctx: ExtensionContext, args: string): Promise<void
 		openPanel(ctx, runtime);
 		return;
 	}
-	if (trimmedArgs === "clear" || trimmedArgs === "clear-all") {
-		applyClear(runtime, ctx);
-		return;
-	}
-	const text = applySync(runtime, ctx, { operation: "sync", input: args, source: "manual", open: true });
-	void text;
+	await applySync(runtime, ctx, { operation: "sync", input: args, source: "manual", open: true });
 }
 
-async function runClearTasksCommand(ctx: ExtensionContext): Promise<void> {
-	const runtime = getRuntime(ctx);
-	applyClear(runtime, ctx);
-}
-
-function getTaskCommandCompletions(
-	prefix: string,
-): Array<{ value: string; label: string; description: string }> | null {
-	const normalizedPrefix = prefix.trimStart().toLowerCase();
-	const matches = TASK_COMMAND_COMPLETIONS.filter((item) => item.value.startsWith(normalizedPrefix));
-	return matches.length > 0 ? matches : null;
-}
-
-function executeTaskTool(ctx: ExtensionContext, params: TaskToolParams): string {
+async function executeTaskTool(ctx: ExtensionContext, params: TaskToolParams): Promise<string> {
 	const runtime = getRuntime(ctx);
 	switch (params.operation) {
 		case "sync":
@@ -319,11 +363,11 @@ function executeTaskTool(ctx: ExtensionContext, params: TaskToolParams): string 
 			return applyPatch(runtime, ctx, params);
 		case "remove":
 			return applyRemove(runtime, ctx, params);
-		case "clear":
-			return applyClear(runtime, ctx);
 		case "snapshot":
+			await refreshRuntime(ctx, runtime);
 			return applySnapshot(runtime);
 		case "show":
+			await refreshRuntime(ctx, runtime);
 			openPanel(ctx, runtime);
 			return "task panel shown";
 		case "hide":
@@ -338,18 +382,18 @@ export default function taskOverlayExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "tasks",
 		label: "Tasks",
-		description: "Sync, update, clear, and inspect the live task panel",
-		promptSnippet: "Use the tasks tool to keep work items synchronized with the live task panel.",
+		description: "Sync, update, and inspect markdown-backed task files",
+		promptSnippet: "Use the tasks tool to keep markdown-backed task files synchronized with the live task overlay.",
 		promptGuidelines: [
-			"When the work changes, sync or update the canonical task list.",
+			"When work changes, use tasks to sync or update the canonical markdown task files.",
 			"Accept upstream plans in plain JSON, markdown checklists, or simple text.",
-			"Keep the task panel aligned with the agent's actual work.",
+			"Use tasks activate when the agent starts work, and tasks complete when work is finished.",
 		],
 		parameters: TASK_TOOL_PARAMS,
-		executionMode: "parallel",
+		executionMode: "sequential",
 		renderShell: "default",
 		execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
-			const message = executeTaskTool(ctx, params as TaskToolParams);
+			const message = await executeTaskTool(ctx, params as TaskToolParams);
 			const result: ToolExecutionResult = {
 				content: [{ type: "text", text: message }],
 				details: { tasks: getRuntime(ctx).store.snapshot() },
@@ -359,17 +403,9 @@ export default function taskOverlayExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("tasks", {
-		description: "Open the task overlay, sync tasks when text is provided, or clear tasks with `clear`",
-		getArgumentCompletions: getTaskCommandCompletions,
+		description: "Open the task overlay or sync tasks when text is provided",
 		handler: async (args: string, ctx: ExtensionContext) => {
 			await runTaskCommand(ctx, args);
-		},
-	});
-
-	pi.registerCommand("clear-tasks", {
-		description: "Clear all tasks from the task overlay",
-		handler: async (_args: string, ctx: ExtensionContext) => {
-			await runClearTasksCommand(ctx);
 		},
 	});
 
@@ -387,8 +423,7 @@ export default function taskOverlayExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event: unknown, ctx: ExtensionContext) => {
 		const runtime = getRuntime(ctx);
-		hydrateStoreFromSessionEntries(runtime, ctx.sessionManager.getEntries());
-		updateFooterStatus(ctx, runtime.store);
+		await refreshRuntime(ctx, runtime);
 	});
 
 	pi.on("session_shutdown", async (_event: unknown, ctx: ExtensionContext) => {
