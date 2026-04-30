@@ -1,0 +1,59 @@
+{
+	"name": "pi-extension-tasks",
+	"version": "0.1.0",
+	"description": "Standalone Pi task overlay extension package.",
+	"type": "module",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"pi-skill",
+		"tasks",
+		"overlay"
+	],
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"lint": "eslint .",
+		"format": "prettier --write .",
+		"format:check": "prettier --check .",
+		"test": "vitest run",
+		"check": "npm run typecheck && npm run lint && npm run test",
+		"pack:dry-run": "npm pack --dry-run"
+	},
+	"files": [
+		"src",
+		"skills",
+		"README.md"
+	],
+	"pi": {
+		"extensions": [
+			"./src"
+		],
+		"skills": [
+			"./skills"
+		]
+	},
+	"peerDependencies": {
+		"@mariozechner/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"peerDependenciesMeta": {
+		"@mariozechner/pi-coding-agent": {
+			"optional": true
+		},
+		"typebox": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@eslint/js": "^9.35.0",
+		"@mariozechner/pi-coding-agent": "latest",
+		"eslint": "^9.35.0",
+		"eslint-config-prettier": "^10.1.8",
+		"prettier": "^3.6.2",
+		"typescript": "^5.9.3",
+		"typescript-eslint": "latest",
+		"typebox": "latest",
+		"vitest": "^4.1.5"
+	},
+	"packageManager": "pnpm@10.11.0+sha1.4048eeefd564ff1ab248fac3e2854d38245fe2f1"
+}
