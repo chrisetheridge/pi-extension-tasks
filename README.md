@@ -10,6 +10,12 @@ Standalone Pi package for the markdown-backed task panel extension and task tool
 
 ## Install
 
+From git:
+
+```bash
+pi install git:github.com/chrisetheridge/pi-extension-tasks
+```
+
 From this local checkout:
 
 ```bash
@@ -53,12 +59,15 @@ The package exposes its runtime modules through:
 
 ```json
 {
+	"keywords": ["pi-package"],
 	"pi": {
 		"extensions": ["./src"],
 		"skills": ["./skills"]
 	}
 }
 ```
+
+Pi clones git packages, runs `npm install` when `package.json` is present, then loads the resources declared in the `pi` manifest. Pi core runtime packages imported by the extension are declared as peer dependencies and kept out of the package bundle, matching Pi package guidance.
 
 Run checks with:
 
