@@ -1,11 +1,11 @@
 # pi-extension-tasks
 
-Standalone Pi package for the markdown-backed task overlay extension and task tool.
+Standalone Pi package for the markdown-backed task panel extension and task tool.
 
 ## Layout
 
 - `src/` - runtime extension source consumed by Pi
-- `skills/` - agent guidance for using the task overlay feature
+- `skills/` - agent guidance for using the task panel feature
 - `tests/` - package tests
 
 ## Install
@@ -33,12 +33,12 @@ Relative paths resolve against the current project directory. If no config exist
 
 ## Usage
 
-- `/tasks` opens the centered searchable task overlay.
+- `/tasks` opens the task panel.
 - Typing text after `/tasks` syncs that text into markdown tasks.
-- `Ctrl+Shift+T` toggles the overlay.
-- The overlay supports list, actions, and detail views.
+- `Ctrl+Shift+T` toggles the panel.
+- The panel supports list, actions, and detail views.
 - Search matches task id, title, status, owner, body, and notes.
-- Overlay actions are `view`, `claim`, `refine`, `complete`, and `delete`.
+- Panel actions are `view`, `claim`, `refine`, `complete`, and `delete`.
 - `claim` marks the task as `progress` and assigns it to the user.
 - `refine` opens a refinement prompt in the editor without changing the task file.
 - The `tasks` tool can sync, upsert, update, activate, block, complete, remove, snapshot, show, and hide tasks.

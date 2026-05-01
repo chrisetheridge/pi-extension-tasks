@@ -1,5 +1,6 @@
 import {
 	fuzzyMatch,
+	Key,
 	matchesKey,
 	truncateToWidth,
 	visibleWidth,
@@ -39,23 +40,23 @@ function isPrintable(data: string): boolean {
 }
 
 function isBackspace(data: string): boolean {
-	return matchesKey(data, "backspace") || data === "\u007f" || data === "\b";
+	return matchesKey(data, Key.backspace);
 }
 
 function isEnter(data: string): boolean {
-	return matchesKey(data, "enter") || matchesKey(data, "return") || data === "\r" || data === "\n";
+	return matchesKey(data, Key.enter);
 }
 
 function isEscape(data: string): boolean {
-	return matchesKey(data, "escape") || data === "\u001b" || data === "escape";
+	return matchesKey(data, Key.escape);
 }
 
 function isUp(data: string): boolean {
-	return matchesKey(data, "up") || data === "\u001b[A" || data === "\u001bOA" || data === "up";
+	return matchesKey(data, Key.up);
 }
 
 function isDown(data: string): boolean {
-	return matchesKey(data, "down") || data === "\u001b[B" || data === "\u001bOB" || data === "down";
+	return matchesKey(data, Key.down);
 }
 
 function taskSearchText(task: TaskItem): string {

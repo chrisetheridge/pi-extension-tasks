@@ -1,7 +1,6 @@
 import { Type } from "typebox";
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { OverlayOptions } from "@mariozechner/pi-tui";
 import {
 	clearTasks,
 	deleteTask,
@@ -60,13 +59,9 @@ interface RuntimeState {
 	store: TaskStore;
 	config?: TaskConfig;
 	loadErrors: string[];
-	panelHandle?: {
-		setHidden?(hidden: boolean): void;
-		hide?(): void;
-		focus?(): void;
-		isHidden?(): boolean;
-	};
-	panelPromise?: Promise<unknown>;
+	panelOpen: boolean;
+	panelClose?: () => void;
+	panelPromise?: Promise<void>;
 }
 
 interface ToolExecutionResult {
@@ -80,22 +75,10 @@ function getRuntime(ctx: ExtensionContext): RuntimeState {
 	const key = ctx.sessionManager as unknown as object;
 	let runtime = runtimeBySessionManager.get(key);
 	if (!runtime) {
-		runtime = { store: createTaskStore(), loadErrors: [] };
+		runtime = { store: createTaskStore(), loadErrors: [], panelOpen: false };
 		runtimeBySessionManager.set(key, runtime);
 	}
 	return runtime;
-}
-
-function getOverlayOptions(): { overlay: true; overlayOptions: OverlayOptions } {
-	return {
-		overlay: true,
-		overlayOptions: {
-			anchor: "center",
-			width: "72%",
-			maxHeight: "85%",
-			visible: (termWidth: number) => termWidth >= 70,
-		},
-	};
 }
 
 function updateFooterStatus(ctx: ExtensionContext, store: TaskStore): void {
@@ -112,11 +95,8 @@ async function refreshRuntime(ctx: ExtensionContext, runtime: RuntimeState): Pro
 	updateFooterStatus(ctx, runtime.store);
 }
 
-function hidePanel(runtime: RuntimeState): void {
-	runtime.panelHandle?.setHidden?.(true);
-	if (!runtime.panelHandle?.setHidden) {
-		runtime.panelHandle?.hide?.();
-	}
+function closePanel(runtime: RuntimeState): void {
+	runtime.panelClose?.();
 }
 
 async function ensureRuntimeLoaded(ctx: ExtensionContext, runtime: RuntimeState): Promise<TaskConfig> {
@@ -284,7 +264,7 @@ function getPanelActions(ctx: ExtensionContext, runtime: RuntimeState): TaskPane
 		},
 		refine: (task) => {
 			ctx.ui.setEditorText(buildRefinePrompt(task));
-			hidePanel(runtime);
+			closePanel(runtime);
 		},
 		complete: async (task) => {
 			const config = await ensureRuntimeLoaded(ctx, runtime);
@@ -304,43 +284,37 @@ function getPanelActions(ctx: ExtensionContext, runtime: RuntimeState): TaskPane
 function openPanel(ctx: ExtensionContext, runtime: RuntimeState): void {
 	if (!ctx.hasUI) return;
 	void refreshRuntime(ctx, runtime);
-	if (runtime.panelHandle?.isHidden?.() === false) {
-		runtime.panelHandle.focus?.();
+	if (runtime.panelOpen) {
 		return;
 	}
-	if (runtime.panelHandle) {
-		runtime.panelHandle.setHidden?.(false);
-		runtime.panelHandle.focus?.();
-		return;
-	}
-
-	const promise = ctx.ui.custom(
-		(tui, theme) =>
-			new TaskPanel(
+	runtime.panelOpen = true;
+	const promise = ctx.ui.custom<void>(
+		(tui, theme, _keybindings, done) => {
+			runtime.panelClose = () => done();
+			return new TaskPanel(
 				runtime.store,
 				theme as PanelThemeLike,
 				() => tui.requestRender(),
-				() => hidePanel(runtime),
+				() => closePanel(runtime),
 				getPanelActions(ctx, runtime),
 				() => runtime.loadErrors,
-			),
-		{
-			...getOverlayOptions(),
-			onHandle: (handle) => {
-				runtime.panelHandle = handle;
-			},
+			);
 		},
 	);
-
-	runtime.panelPromise = Promise.resolve(promise).catch(() => undefined);
+	runtime.panelPromise = Promise.resolve(promise)
+		.catch(() => undefined)
+		.finally(() => {
+			runtime.panelOpen = false;
+			runtime.panelClose = undefined;
+		});
 }
 
 async function runTaskCommand(ctx: ExtensionContext, args: string): Promise<void> {
 	const runtime = getRuntime(ctx);
 	const trimmedArgs = args.trim();
 	if (!trimmedArgs) {
-		if (runtime.panelHandle?.isHidden?.() === false) {
-			hidePanel(runtime);
+		if (runtime.panelOpen) {
+			closePanel(runtime);
 			return;
 		}
 		openPanel(ctx, runtime);
@@ -371,7 +345,7 @@ async function executeTaskTool(ctx: ExtensionContext, params: TaskToolParams): P
 			openPanel(ctx, runtime);
 			return "task panel shown";
 		case "hide":
-			hidePanel(runtime);
+			closePanel(runtime);
 			return "task panel hidden";
 		default:
 			return "unknown operation";
@@ -383,7 +357,7 @@ export default function taskOverlayExtension(pi: ExtensionAPI): void {
 		name: "tasks",
 		label: "Tasks",
 		description: "Sync, update, and inspect markdown-backed task files",
-		promptSnippet: "Use the tasks tool to keep markdown-backed task files synchronized with the live task overlay.",
+		promptSnippet: "Use the tasks tool to keep markdown-backed task files synchronized with the live task panel.",
 		promptGuidelines: [
 			"When work changes, use tasks to sync or update the canonical markdown task files.",
 			"Accept upstream plans in plain JSON, markdown checklists, or simple text.",
@@ -403,18 +377,18 @@ export default function taskOverlayExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("tasks", {
-		description: "Open the task overlay or sync tasks when text is provided",
+		description: "Open the task panel or sync tasks when text is provided",
 		handler: async (args: string, ctx: ExtensionContext) => {
 			await runTaskCommand(ctx, args);
 		},
 	});
 
 	pi.registerShortcut(TASK_PANEL_SHORTCUT, {
-		description: "Toggle the task overlay",
+		description: "Toggle the task panel",
 		handler: async (ctx: ExtensionContext) => {
 			const runtime = getRuntime(ctx);
-			if (runtime.panelHandle?.isHidden?.() === false) {
-				hidePanel(runtime);
+			if (runtime.panelOpen) {
+				closePanel(runtime);
 				return;
 			}
 			openPanel(ctx, runtime);
@@ -428,7 +402,7 @@ export default function taskOverlayExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async (_event: unknown, ctx: ExtensionContext) => {
 		const runtime = getRuntime(ctx);
-		hidePanel(runtime);
+		closePanel(runtime);
 		ctx.ui.setStatus(TASK_PANEL_KEY, undefined);
 	});
 }

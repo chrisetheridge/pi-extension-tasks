@@ -29,25 +29,18 @@ function makeCtx(cwd: string) {
 	const setStatus = vi.fn();
 	const setEditorText = vi.fn();
 	const confirm = vi.fn(async () => true);
-	const handles: Array<any> = [];
+	const customCalls: Array<any> = [];
 	const ui = {
 		setStatus,
 		setEditorText,
 		confirm,
-		custom: vi.fn(async (_factory: any, options: any) => {
-			const hidden = { value: false };
-			const handle = {
-				setHidden: vi.fn((nextHidden: boolean) => {
-					hidden.value = nextHidden;
-				}),
-				hide: vi.fn(),
-				focus: vi.fn(),
-				unfocus: vi.fn(),
-				isHidden: vi.fn(() => hidden.value),
-			};
-			handles.push({ options, handle, factory: _factory });
-			options?.onHandle?.(handle);
-			return undefined;
+		custom: vi.fn((factory: any, options?: any) => {
+			let resolve: (value: any) => void = () => {};
+			const promise = new Promise((done) => {
+				resolve = done;
+			});
+			customCalls.push({ factory, options, resolve });
+			return promise;
 		}),
 	};
 	return {
@@ -63,7 +56,8 @@ function makeCtx(cwd: string) {
 		setStatus,
 		setEditorText,
 		confirm,
-		handles,
+		ui,
+		customCalls,
 	};
 }
 
@@ -78,12 +72,12 @@ describe("task overlay extension", () => {
 		expect(pi.registerShortcut).toHaveBeenCalled();
 	});
 
-	it("syncs tasks to markdown files without forcing the overlay open", async () => {
+	it("syncs tasks to markdown files without forcing the widget open", async () => {
 		const { pi, tools, handlers } = makePi();
 		taskOverlayExtension(pi as never);
 		const tool = tools.get("tasks") as any;
 		const cwd = await tempDir();
-		const { ctx, setStatus, handles } = makeCtx(cwd);
+		const { ctx, setStatus, customCalls } = makeCtx(cwd);
 		const startHandler = handlers.get("session_start") as ((event: any, ctx: any) => Promise<void>) | undefined;
 		await startHandler?.({ type: "session_start", reason: "startup" }, ctx);
 
@@ -101,7 +95,7 @@ describe("task overlay extension", () => {
 			"status: complete",
 		);
 		expect(setStatus).toHaveBeenCalledWith("tasks", expect.stringContaining("2"));
-		expect(handles.length).toBe(0);
+		expect(customCalls.length).toBe(0);
 		expect(result.content).toMatchObject([{ type: "text", text: expect.stringContaining("synced") }]);
 	});
 
@@ -156,30 +150,58 @@ describe("task overlay extension", () => {
 		);
 	});
 
-	it("can reopen the centered task overlay after closing it", async () => {
+	it("can reopen the task widget after closing it", async () => {
 		const { pi, tools } = makePi();
 		taskOverlayExtension(pi as never);
 		const tool = tools.get("tasks") as any;
 		const cwd = await tempDir();
-		const { ctx, handles } = makeCtx(cwd);
+		const { ctx, customCalls } = makeCtx(cwd);
 
 		await tool.execute("tool-1", { operation: "sync", input: "- [ ] Draft plan" }, undefined, undefined, ctx);
 		await tool.execute("tool-2", { operation: "show" }, undefined, undefined, ctx);
-		const handle = handles[0]?.handle;
-		expect(handles[0]?.options.overlayOptions).toMatchObject({
-			anchor: "center",
-			width: "72%",
-			maxHeight: "85%",
-		});
-		const component = handles[0]?.factory(
+		expect(customCalls[0]?.options).toBeUndefined();
+		const component = customCalls[0]?.factory(
 			{ requestRender: vi.fn() },
 			{ fg: (_: string, text: string) => text, bold: (text: string) => text, dim: (text: string) => text },
+			undefined,
+			customCalls[0]?.resolve,
 		);
 		component.handleInput("\u001b");
-		expect(handle.setHidden).toHaveBeenCalledWith(true);
+		await Promise.resolve();
 
 		await tool.execute("tool-3", { operation: "show" }, undefined, undefined, ctx);
-		expect(handle.setHidden).toHaveBeenCalledWith(false);
+		expect(customCalls.length).toBe(2);
+	});
+
+	it("moves one row per arrow key press", async () => {
+		const { pi, tools, handlers } = makePi();
+		taskOverlayExtension(pi as never);
+		const tool = tools.get("tasks") as any;
+		const cwd = await tempDir();
+		const { ctx, customCalls } = makeCtx(cwd);
+		const startHandler = handlers.get("session_start") as ((event: any, ctx: any) => Promise<void>) | undefined;
+		await startHandler?.({ type: "session_start", reason: "startup" }, ctx);
+
+		await tool.execute(
+			"tool-1",
+			{ operation: "sync", input: "- [ ] Draft plan\n- [ ] Implement panel\n- [ ] Verify output" },
+			undefined,
+			undefined,
+			ctx,
+		);
+		await tool.execute("tool-2", { operation: "show" }, undefined, undefined, ctx);
+
+		const component = customCalls[0]?.factory(
+			{ requestRender: vi.fn() },
+			{ fg: (_: string, text: string) => text, bold: (text: string) => text, dim: (text: string) => text },
+			undefined,
+			customCalls[0]?.resolve,
+		);
+		component.handleInput("\u001b[B");
+
+		const output = component.render(80).join("\n");
+		expect(output).toContain("> [ ] Implement panel");
+		expect(output).not.toContain("> [ ] Verify output");
 	});
 
 	it("syncs command text into markdown tasks", async () => {
