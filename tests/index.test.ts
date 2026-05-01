@@ -173,6 +173,35 @@ describe("task overlay extension", () => {
 		expect(customCalls.length).toBe(2);
 	});
 
+	it("prefills the editor when refining a task", async () => {
+		const { pi, tools } = makePi();
+		taskOverlayExtension(pi as never);
+		const tool = tools.get("tasks") as any;
+		const cwd = await tempDir();
+		const { ctx, customCalls, setEditorText } = makeCtx(cwd);
+
+		await tool.execute("tool-1", { operation: "sync", input: "- [ ] Draft plan" }, undefined, undefined, ctx);
+		await tool.execute("tool-2", { operation: "show" }, undefined, undefined, ctx);
+
+		const component = customCalls[0]?.factory(
+			{ requestRender: vi.fn() },
+			{ fg: (_: string, text: string) => text, bold: (text: string) => text, dim: (text: string) => text },
+			undefined,
+			customCalls[0]?.resolve,
+		);
+		component.handleInput("\r");
+		component.handleInput("\u001b[B");
+		component.handleInput("\u001b[B");
+		component.handleInput("\r");
+
+		await Promise.resolve();
+
+		expect(setEditorText).toHaveBeenCalledTimes(1);
+		expect(setEditorText).toHaveBeenCalledWith(
+			expect.stringContaining(`Let's refine task task-draft-plan "Draft plan".`),
+		);
+	});
+
 	it("moves one row per arrow key press", async () => {
 		const { pi, tools, handlers } = makePi();
 		taskOverlayExtension(pi as never);

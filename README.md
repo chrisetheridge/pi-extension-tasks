@@ -53,6 +53,18 @@ Task files use YAML frontmatter for `id`, `title`, `status`, `owner`, `created_a
 
 Task file names normally match the task id, for example `task-write-tests.md`.
 
+## Screenshots
+
+View of all tasks.
+![View of all tasks](docs/images/tasks-main.png)
+
+View a single task.
+![Viewing a single task](docs/images/task-view.png)
+
+Actions on a task.
+![Actions for a task](docs/images/task-actions.png)
+
+
 ## Package
 
 The package exposes its runtime modules through:

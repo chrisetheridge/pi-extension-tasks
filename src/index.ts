@@ -255,6 +255,10 @@ function buildRefinePrompt(task: TaskItem): string {
 		.join("\n");
 }
 
+function prefillEditor(ctx: ExtensionContext, text: string): void {
+	queueMicrotask(() => ctx.ui.setEditorText(text));
+}
+
 function getPanelActions(ctx: ExtensionContext, runtime: RuntimeState): TaskPanelActions {
 	return {
 		claim: async (task) => {
@@ -263,8 +267,8 @@ function getPanelActions(ctx: ExtensionContext, runtime: RuntimeState): TaskPane
 			await refreshRuntime(ctx, runtime);
 		},
 		refine: (task) => {
-			ctx.ui.setEditorText(buildRefinePrompt(task));
 			closePanel(runtime);
+			prefillEditor(ctx, buildRefinePrompt(task));
 		},
 		complete: async (task) => {
 			const config = await ensureRuntimeLoaded(ctx, runtime);
