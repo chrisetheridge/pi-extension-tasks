@@ -1,5 +1,11 @@
 # pi-extension-tasks
 
+# Note
+
+This package is no longer being actively maintained!
+
+---
+
 Standalone Pi package for the markdown-backed task panel extension and task tool.
 
 ## Layout
